@@ -12,6 +12,8 @@ jobs:
   acceptance:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      LIVE_AGENT_ENABLED: ${{ secrets.ANTHROPIC_API_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,6 +31,9 @@ jobs:
           cd computer-use-demo && pytest tests -q && cd ..
           docker compose -f computer-use-demo/compose.yaml config --quiet
       - name: Build and start platform
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
         run: docker compose -f computer-use-demo/compose.yaml up --build -d
       - name: Wait for readiness
         shell: bash
@@ -42,8 +47,11 @@ jobs:
         run: |
           python computer-use-demo/tests/api_proof.py
           python computer-use-demo/tests/desktop_proof.py
-          python computer-use-demo/tests/concurrency_proof.py --sessions 2
+          python computer-use-demo/tests/provisioning_concurrency_proof.py
           python computer-use-demo/tests/restart_proof.py
+      - name: Live agent concurrency proof
+        if: env.LIVE_AGENT_ENABLED == 'true'
+        run: python computer-use-demo/tests/concurrency_proof.py --sessions 2
       - name: Upload proof
         if: always()
         uses: actions/upload-artifact@v4
