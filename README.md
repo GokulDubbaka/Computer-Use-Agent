@@ -48,6 +48,123 @@ Runtime Controller -------- Docker Engine
 
 The API is the control plane. PostgreSQL is the durable source of truth. The controller dynamically creates a uniquely named capsule for each session. Each capsule worker polls only its own session, renews its fenced lease, emits ordered events, and reports completion through authenticated internal endpoints.
 
+## Sequence diagrams
+
+### Session creation and capsule provisioning
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI
+    participant API as FastAPI
+    participant DB as PostgreSQL
+    participant Controller
+    participant Docker
+    participant Worker
+
+    User->>UI: Create session
+    UI->>API: POST /api/sessions
+    API->>DB: Create session and append session.provisioning
+    API->>Controller: POST /runtimes with session ID and token
+    Controller->>Docker: Start capsule-session_id
+    Docker-->>Controller: Runtime ID and host
+    Controller-->>API: 201 runtime created
+    API->>DB: Attach runtime and append session.ready
+    API-->>UI: 201 session ready
+    Worker->>API: POST runtime.worker_ready with session token
+    API->>DB: Append session-scoped event
+```
+
+### Idempotent run and real-time progress
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI
+    participant API as FastAPI
+    participant DB as PostgreSQL
+    participant Worker
+
+    UI->>API: GET /api/sessions/session_id/stream
+    API->>DB: Replay events after Last-Event-ID
+    API-->>UI: SSE connection ready
+    User->>UI: Submit prompt
+    UI->>API: POST /runs with Idempotency-Key
+    API->>DB: Create or reuse run and persist prompt
+    alt New run
+        API->>DB: Append run.queued
+        API-->>UI: 201 created
+    else Repeated idempotency key
+        API-->>UI: 200 existing run
+    end
+    Worker->>API: POST /internal/runtime/session_id/next-run
+    API->>DB: Claim session run with fenced lease
+    API->>DB: Append run.started
+    loop Agent execution
+        Worker->>API: POST agent or tool event
+        API->>DB: Append event with next sequence
+        API-->>UI: SSE ordered progress event
+    end
+    Worker->>API: POST /finish with worker and lease version
+    API->>DB: Validate lease, persist result, append run.finished
+    API-->>UI: SSE completion event
+```
+
+### Strict two-session concurrency
+
+```mermaid
+sequenceDiagram
+    actor UserA
+    actor UserB
+    participant API as FastAPI
+    participant DB as PostgreSQL
+    participant WorkerA as Capsule A worker
+    participant WorkerB as Capsule B worker
+
+    Note over WorkerA,WorkerB: Distinct session, runtime, worker, desktop and lease identities
+    UserA->>API: Submit Tokyo run to session A
+    API->>DB: Commit run A
+    UserB->>API: Submit New York run to session B
+    API->>DB: Commit run B
+    par Independent session A execution
+        WorkerA->>API: Claim only session A work
+        API->>DB: Lease run A to worker A
+        WorkerA->>API: Stream session A events
+        WorkerA->>API: Finish run A
+    and Independent session B execution
+        WorkerB->>API: Claim only session B work
+        API->>DB: Lease run B to worker B
+        WorkerB->>API: Stream session B events
+        WorkerB->>API: Finish run B
+    end
+    Note over UserA,UserB: Both run.started events occur before either run.finished
+```
+
+### Lease expiry and stale-worker fencing
+
+```mermaid
+sequenceDiagram
+    participant Worker
+    participant API as FastAPI
+    participant DB as PostgreSQL
+    participant Reaper as API reaper
+
+    Worker->>API: Request next run
+    API->>DB: Claim run with lease version 1
+    loop Healthy execution
+        Worker->>API: Heartbeat with version 1
+        API->>DB: Extend lease
+    end
+    Worker--xAPI: Heartbeats stop
+    Reaper->>DB: Find expired running leases
+    DB-->>Reaper: Mark run interrupted and session error
+    Reaper->>DB: Append run.interrupted
+    Worker->>API: POST late /finish with version 1
+    API->>DB: Validate worker, status and lease version
+    DB-->>API: No valid ownership
+    API-->>Worker: 409 run lease is no longer valid
+```
+
 ## Session isolation
 
 Every session receives:
