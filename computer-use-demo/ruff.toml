@@ -20,5 +20,8 @@ select = [
 
 ignore = ["E501", "ASYNC230"]
 
+[lint.per-file-ignores]
+"tests/*_proof.py" = ["T201"]
+
 [lint.isort]
 combine-as-imports = true

@@ -6,6 +6,7 @@ useLibraryCodeForTypes = false
 # after defining __all__, so pyright flags `from anthropic import AnthropicBedrock` as a
 # private import even though it is the SDK's documented API and works at runtime.
 reportPrivateImportUsage = false
+pythonPlatform = "Linux"
 
 [tool.pytest.ini_options]
 pythonpath = "."

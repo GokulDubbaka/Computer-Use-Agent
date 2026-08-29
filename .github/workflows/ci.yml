@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: computer-use-demo/dev-requirements.txt
+      - name: Install quality tools
+        run: python -m pip install -r computer-use-demo/dev-requirements.txt
+      - name: Static validation
+        run: |
+          python -m compileall -q computer-use-demo/computer_use_demo computer-use-demo/tests
+          ruff check computer-use-demo/computer_use_demo computer-use-demo/tests
+          pyright --project pyproject.toml computer-use-demo/computer_use_demo
+          cd computer-use-demo && pytest tests -q && cd ..
+          docker compose -f computer-use-demo/compose.yaml config --quiet
+      - name: Build and start platform
+        run: docker compose -f computer-use-demo/compose.yaml up --build -d
+      - name: Wait for readiness
+        shell: bash
+        run: |
+          for attempt in {1..60}; do
+            curl --fail --silent http://127.0.0.1:8080/ready && exit 0
+            sleep 2
+          done
+          exit 1
+      - name: Acceptance proofs
+        run: |
+          python computer-use-demo/tests/api_proof.py
+          python computer-use-demo/tests/desktop_proof.py
+          python computer-use-demo/tests/concurrency_proof.py --sessions 2
+          python computer-use-demo/tests/restart_proof.py
+      - name: Upload proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: concurrency-proof
+          path: computer-use-demo/artifacts/
+          if-no-files-found: ignore
+      - name: Failure logs
+        if: failure()
+        run: docker compose -f computer-use-demo/compose.yaml logs --no-color
+      - name: Cleanup
+        if: always()
+        run: docker compose -f computer-use-demo/compose.yaml down --volumes --remove-orphans
