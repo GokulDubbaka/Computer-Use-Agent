@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Computer Use Session Manager</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #11172b;
+      --panel-2: #151d36;
+      --line: #24304f;
+      --text: #eef2ff;
+      --muted: #97a3c0;
+      --accent: #7c9cff;
+      --good: #57d18a;
+      --warn: #ffb86b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.4 Inter, ui-sans-serif, system-ui, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(124,156,255,.20), transparent 30%),
+        linear-gradient(180deg, #0a0f1d 0%, #0b1020 100%);
+    }
+    header {
+      padding: 20px 24px 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(11,16,32,.85);
+      backdrop-filter: blur(10px);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    h1 { margin: 0 0 6px; font-size: 20px; }
+    .sub { color: var(--muted); }
+    main {
+      display: grid;
+      grid-template-columns: 280px 1.2fr 1fr;
+      gap: 16px;
+      padding: 16px;
+      min-height: calc(100vh - 72px);
+    }
+    .card {
+      background: rgba(17, 23, 43, .92);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px;
+      overflow: hidden;
+    }
+    .stack { display: grid; gap: 10px; }
+    button, input, textarea {
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 10px 12px;
+      font: inherit;
+    }
+    button { cursor: pointer; background: linear-gradient(180deg, #2a3760, #1c2544); }
+    button.primary { background: linear-gradient(180deg, #5776ff, #3553f3); border-color: #5e7aff; }
+    button.ghost { background: transparent; }
+    .sessions { display: grid; gap: 8px; }
+    .session {
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(21,29,54,.8);
+      cursor: pointer;
+    }
+    .session.active { outline: 1px solid var(--accent); }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .pill {
+      font-size: 12px;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 8px;
+    }
+    .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+    textarea { min-height: 88px; resize: vertical; width: 100%; }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0a1020;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      min-height: 160px;
+      max-height: 360px;
+      overflow: auto;
+    }
+    iframe {
+      width: 100%;
+      height: 420px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #000;
+    }
+    a { color: var(--accent); }
+    .status { color: var(--good); }
+    .warn { color: var(--warn); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Computer Use Session Manager</h1>
+    <div class="sub">FastAPI backend, SSE updates, DB-backed sessions, and VNC access.</div>
+  </header>
+  <main>
+    <section class="card stack">
+      <div class="row">
+        <button class="primary" id="newSession">New Session</button>
+        <button id="refresh">Refresh</button>
+      </div>
+      <div>
+        <div class="label">Sessions</div>
+        <div id="sessions" class="sessions"></div>
+      </div>
+    </section>
+
+    <section class="card stack">
+      <div class="row">
+        <div class="pill" id="sessionMeta">No session selected</div>
+        <div class="pill" id="streamState">SSE idle</div>
+      </div>
+      <div>
+        <div class="label">Title</div>
+        <input id="title" placeholder="Optional session title" />
+      </div>
+      <div>
+        <div class="label">Message</div>
+        <textarea id="message" placeholder="Write a message to persist"></textarea>
+      </div>
+      <div class="row">
+        <button class="primary" id="sendMessage">Send Message</button>
+        <button id="createRun">Run Agent</button>
+      </div>
+      <div>
+        <div class="label">Session Detail</div>
+        <pre id="detail">Select a session.</pre>
+      </div>
+    </section>
+
+    <section class="card stack">
+      <div class="row">
+        <div class="pill">VNC</div>
+        <a id="vncLink" href="#" target="_blank" rel="noreferrer">Open full VNC</a>
+      </div>
+      <iframe id="vncFrame" title="Computer-use desktop"></iframe>
+      <div>
+        <div class="label">Live Events</div>
+        <pre id="events">Waiting for a session.</pre>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    let currentSessionId = null;
+    let eventSource = null;
+
+    const $ = (id) => document.getElementById(id);
+    const sessionsEl = $("sessions");
+    const detailEl = $("detail");
+    const eventsEl = $("events");
+    const streamStateEl = $("streamState");
+    const metaEl = $("sessionMeta");
+    const vncUrl = `${location.protocol}//${location.hostname}:6080/vnc.html?resize=scale&autoconnect=1&view_only=1&reconnect=1&reconnect_delay=2000`;
+    $("vncLink").href = vncUrl;
+    $("vncFrame").src = vncUrl;
+
+    function setStreamState(text, cls = "") {
+      streamStateEl.textContent = text;
+      streamStateEl.className = `pill ${cls}`.trim();
+    }
+
+    async function refreshSessions() {
+      const res = await fetch("/api/sessions");
+      const data = await res.json();
+      sessionsEl.innerHTML = "";
+      for (const session of data.items) {
+        const div = document.createElement("div");
+        div.className = "session" + (session.id === currentSessionId ? " active" : "");
+        const heading = document.createElement("strong");
+        heading.textContent = session.title || session.id;
+        const status = document.createElement("div");
+        status.className = "sub";
+        status.textContent = `${session.status} · ${session.id}`;
+        div.append(heading, status);
+        div.onclick = () => selectSession(session.id);
+        sessionsEl.appendChild(div);
+      }
+    }
+
+    async function selectSession(sessionId) {
+      currentSessionId = sessionId;
+      if (eventSource) eventSource.close();
+      const res = await fetch(`/api/sessions/${sessionId}`);
+      const data = await res.json();
+      metaEl.textContent = `${data.id} · ${data.status}`;
+      detailEl.textContent = JSON.stringify(data, null, 2);
+      eventsEl.textContent = "";
+      setStreamState("Connecting...", "warn");
+      eventSource = new EventSource(`/api/sessions/${sessionId}/stream`);
+      eventSource.onopen = () => setStreamState("Live", "status");
+      eventSource.onerror = () => setStreamState("Reconnecting...", "warn");
+      eventSource.onmessage = (evt) => {
+        eventsEl.textContent += evt.data + "\n";
+        eventsEl.scrollTop = eventsEl.scrollHeight;
+      };
+      await refreshSessions();
+    }
+
+    $("newSession").onclick = async () => {
+      const title = $("title").value.trim();
+      const res = await fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      const session = await res.json();
+      await refreshSessions();
+      await selectSession(session.id);
+    };
+
+    $("refresh").onclick = async () => {
+      await refreshSessions();
+      if (currentSessionId) {
+        await selectSession(currentSessionId);
+      }
+    };
+
+    $("sendMessage").onclick = async () => {
+      if (!currentSessionId) return;
+      await fetch(`/api/sessions/${currentSessionId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "user", content: $("message").value }),
+      });
+      $("message").value = "";
+      await selectSession(currentSessionId);
+    };
+
+    $("createRun").onclick = async () => {
+      if (!currentSessionId) return;
+      await fetch(`/api/sessions/${currentSessionId}/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({}),
+      });
+      await selectSession(currentSessionId);
+    };
+
+    refreshSessions();
+  </script>
+</body>
+</html>
