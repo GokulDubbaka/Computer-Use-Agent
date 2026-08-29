@@ -51,9 +51,9 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
 COPY --chown=computeruse:computeruse image/ ./
 COPY --chown=computeruse:computeruse computer_use_demo/ ./computer_use_demo/
 
-RUN sed -i 's/\r$//' ./entrypoint.sh ./start_tigervnc.sh ./start_openbox.sh ./start_novnc.sh \
+RUN sed -i 's/\r$//' ./entrypoint.sh ./start_tigervnc.sh ./start_openbox.sh ./start_novnc.sh ./start_firefox.sh \
     && mkdir -p "$HOME/.anthropic" \
-    && chmod +x ./entrypoint.sh ./start_tigervnc.sh ./start_openbox.sh ./start_novnc.sh
+    && chmod +x ./entrypoint.sh ./start_tigervnc.sh ./start_openbox.sh ./start_novnc.sh ./start_firefox.sh
 
 EXPOSE 6080 5900
 
