@@ -46,7 +46,7 @@ NOT_EXECUTED_ERROR = "Not executed: an earlier computer action in this turn fail
 PROMPT_CACHING_BETA_FLAG = "prompt-caching-2024-07-31"
 
 # How the model's reasoning is requested. Which modes a given model supports is
-# declared per-model in streamlit.py (MODEL_TO_MODEL_CONF):
+# selected by the caller for the configured model:
 # - "adaptive": the model decides how much to think, steered by an effort level
 #   (Claude Opus 4.6 / Sonnet 4.6 and newer). Sent as
 #   thinking={"type": "adaptive"} plus output_config={"effort": ...}.
@@ -97,6 +97,7 @@ async def sampling_loop(
         [httpx.Request, httpx.Response | object | None, Exception | None], None
     ],
     api_key: str,
+    workspace_id: str | None = None,
     only_n_most_recent_images: int | None = None,
     max_tokens: int = 4096,
     tool_version: ToolVersion,
@@ -122,7 +123,8 @@ async def sampling_loop(
             betas.append("token-efficient-tools-2025-02-19")
         image_truncation_threshold = only_n_most_recent_images or 0
         if provider == APIProvider.ANTHROPIC:
-            client = Anthropic(api_key=api_key, max_retries=4)
+            headers = {"anthropic-workspace-id": workspace_id} if workspace_id else None
+            client = Anthropic(api_key=api_key, default_headers=headers, max_retries=4)
             enable_prompt_caching = True
         elif provider == APIProvider.VERTEX:
             client = AnthropicVertex()
@@ -161,9 +163,7 @@ async def sampling_loop(
             }
 
         # Call the API
-        # we use raw_response to provide debug information to streamlit. Your
-        # implementation may be able call the SDK directly with:
-        # `response = client.messages.create(...)` instead.
+        # Use raw_response so callers can publish request status and errors.
         try:
             raw_response = client.beta.messages.with_raw_response.create(
                 max_tokens=max_tokens,

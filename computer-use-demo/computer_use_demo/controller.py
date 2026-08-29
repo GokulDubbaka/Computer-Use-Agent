@@ -80,6 +80,7 @@ async def create_runtime(
                 "RUNTIME_TOKEN": payload.runtime_token,
                 "CONTROL_PLANE_URL": "http://api:8000",
                 "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
+                "ANTHROPIC_WORKSPACE_ID": os.getenv("ANTHROPIC_WORKSPACE_ID", ""),
                 "ANTHROPIC_MODEL": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
                 "API_PROVIDER": os.getenv("API_PROVIDER", "anthropic"),
                 "AGENT_MODE": os.getenv("AGENT_MODE", "mock"),

@@ -60,6 +60,7 @@ services:
       CAPSULE_IMAGE: computer-use-capsule:local
       CAPSULE_NETWORK: computer-use-network
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_WORKSPACE_ID: ${ANTHROPIC_WORKSPACE_ID:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
       API_PROVIDER: ${API_PROVIDER:-anthropic}
       AGENT_MODE: ${AGENT_MODE:-mock}
