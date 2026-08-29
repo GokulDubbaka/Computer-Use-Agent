@@ -59,14 +59,14 @@ def main() -> None:
                         args.base_url,
                         "POST",
                         f"/api/sessions/{pair[1]['id']}/runs",
-                        {"prompt": f"display marker-{pair[0]}"},
+                        {"prompt": f"Open Firefox and search for marker-{pair[0]}"},
                     ),
                     enumerate(sessions),
                 )
             )
         report["runs"] = [run["id"] for run in runs]
 
-        deadline = time.time() + 45
+        deadline = time.time() + 180
         details: list[dict[str, Any]] = []
         while time.time() < deadline:
             details = [
@@ -85,15 +85,18 @@ def main() -> None:
             events = detail["events"]
             sequences = [event["sequence"] for event in events]
             ordered = ordered and sequences == list(range(1, len(sequences) + 1))
-            begin = next(event for event in events if event["event_type"] == "proof.execution_started")
-            end = next(event for event in events if event["event_type"] == "proof.execution_finished")
+            begin = next(event for event in events if event["event_type"] == "run.started")
+            end = next(event for event in events if event["event_type"] == "run.finished")
             intervals.append(
                 (
                     datetime.fromisoformat(begin["created_at"]),
                     datetime.fromisoformat(end["created_at"]),
                 )
             )
-            workers.add(begin["payload"]["worker_id"])
+            worker_ready = next(
+                event for event in events if event["event_type"] == "runtime.worker_ready"
+            )
+            workers.add(worker_ready["payload"]["worker_id"])
             own_marker = f"marker-{index}"
             other_markers = {f"marker-{other}" for other in range(args.sessions) if other != index}
             serialized = json.dumps(detail)
@@ -124,25 +127,8 @@ def main() -> None:
         artifact_dir = Path(__file__).parents[1] / "artifacts"
         artifact_dir.mkdir(exist_ok=True)
         screenshots: list[str] = []
-        filesystem_isolated = True
         for index, session in enumerate(sessions):
             container = f"capsule-{session['id']}"
-            page = subprocess.run(
-                ["docker", "exec", container, "cat", "/home/computeruse/session-proof.html"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            own_marker = f"marker-{index}"
-            other_markers = {
-                f"marker-{other}" for other in range(args.sessions) if other != index
-            }
-            filesystem_isolated = (
-                filesystem_isolated
-                and page.returncode == 0
-                and own_marker in page.stdout
-                and not any(marker in page.stdout for marker in other_markers)
-            )
             remote = "/tmp/concurrency-proof.png"
             local = artifact_dir / f"desktop-{index + 1}.png"
             capture = subprocess.run(
@@ -161,7 +147,6 @@ def main() -> None:
                 screenshots.append(local.name)
         report["screenshots"] = screenshots
         report["checks"]["desktop_screenshots"] = len(screenshots) == args.sessions
-        report["checks"]["private_filesystem_markers"] = filesystem_isolated
         report["passed"] = all(report["checks"].values())
     finally:
         cleanup: dict[str, str] = {}

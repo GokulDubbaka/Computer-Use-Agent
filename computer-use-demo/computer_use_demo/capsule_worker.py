@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
-import time
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -17,7 +15,6 @@ RUNTIME_TOKEN = os.environ["RUNTIME_TOKEN"]
 CONTROL_PLANE_URL = os.getenv("CONTROL_PLANE_URL", "http://api:8000")
 WORKER_ID = f"{socket.gethostname()}-{os.getpid()}"
 HEADERS = {"X-Runtime-Token": RUNTIME_TOKEN, "X-Worker-Id": WORKER_ID}
-AGENT_MODE = os.getenv("AGENT_MODE", "mock")
 
 
 def _block_payload(block: Any) -> dict[str, Any]:
@@ -116,45 +113,6 @@ async def _execute(client: httpx.AsyncClient, run: dict[str, Any]) -> None:
     heartbeat = asyncio.create_task(_heartbeat(client, run_id, lease_version))
     publisher = asyncio.create_task(publish_events())
     try:
-        if AGENT_MODE == "mock":
-            await _post_event(
-                client,
-                "proof.execution_started",
-                {"worker_id": WORKER_ID, "monotonic_ns": time.monotonic_ns()},
-                run_id,
-            )
-            page = (
-                f"<html><body style='font:32px sans-serif;background:#111;color:#eee'>"
-                f"<h1>Isolated session</h1><p>{SESSION_ID}</p>"
-                f"<p>{run['prompt']}</p></body></html>"
-            )
-            proof_page = Path.home() / "session-proof.html"
-            proof_page.write_text(page, encoding="utf-8")
-            process = await asyncio.create_subprocess_exec(
-                "firefox-esr",
-                "--no-remote",
-                proof_page.as_uri(),
-                env={**os.environ, "DISPLAY": ":1"},
-            )
-            await _post_event(client, "agent.output", {"block": {"type": "text", "text": "Mock task running"}}, run_id)
-            await asyncio.sleep(float(os.getenv("MOCK_RUN_SECONDS", "5")))
-            await _post_event(
-                client,
-                "proof.execution_finished",
-                {"worker_id": WORKER_ID, "pid": process.pid, "monotonic_ns": time.monotonic_ns()},
-                run_id,
-            )
-            response = await client.post(
-                f"/internal/runtime/{SESSION_ID}/runs/{run_id}/finish",
-                headers=HEADERS,
-                json={
-                    "status": "completed",
-                    "lease_version": lease_version,
-                    "result": {"assistant_text": f"Completed isolated mock task in {SESSION_ID}"},
-                },
-            )
-            response.raise_for_status()
-            return
         provider = APIProvider(os.getenv("API_PROVIDER", "anthropic"))
         api_key = os.getenv("ANTHROPIC_API_KEY", "")
         workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID") or None
