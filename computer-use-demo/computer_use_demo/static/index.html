@@ -114,7 +114,8 @@
   <main>
     <section class="card stack">
       <div class="row">
-        <button class="primary" id="newSession">New Session</button>
+        <input id="title" placeholder="New session title (optional)" />
+        <button class="primary" id="newSession">Create Session</button>
         <button id="refresh">Refresh</button>
       </div>
       <div>
@@ -129,14 +130,11 @@
         <div class="pill" id="streamState">SSE idle</div>
       </div>
       <div>
-        <div class="label">Title</div>
-        <input id="title" placeholder="Optional session title" />
-      </div>
-      <div>
-        <div class="label">Message</div>
-        <textarea id="message" placeholder="Write a message to persist"></textarea>
+        <div class="label">Message / run prompt</div>
+        <textarea id="message" placeholder="Write a session message or agent prompt"></textarea>
       </div>
       <div class="row">
+        <button id="saveMessage">Save Message</button>
         <button class="primary" id="createRun">Run Agent</button>
         <button id="deleteSession">End Session</button>
       </div>
@@ -162,6 +160,8 @@
   <script>
     let currentSessionId = null;
     let eventSource = null;
+    const draftsBySession = new Map();
+    let selectionVersion = 0;
 
     const $ = (id) => document.getElementById(id);
     const sessionsEl = $("sessions");
@@ -194,17 +194,30 @@
       }
     }
 
-    async function selectSession(sessionId) {
-      currentSessionId = sessionId;
-      if (eventSource) eventSource.close();
+    async function refreshSelectedSnapshot(sessionId, version) {
       const res = await fetch(`/api/sessions/${sessionId}`);
       const data = await res.json();
+      if (version !== selectionVersion) return;
       metaEl.textContent = `${data.id} · ${data.status}`;
       detailEl.textContent = JSON.stringify(data, null, 2);
+      await refreshSessions();
+    }
+
+    async function selectSession(sessionId) {
+      if (currentSessionId) {
+        draftsBySession.set(currentSessionId, $("message").value);
+      }
+      currentSessionId = sessionId;
+      const version = ++selectionVersion;
+      if (eventSource) eventSource.close();
+      $("message").value = draftsBySession.get(sessionId) || "";
+      await refreshSelectedSnapshot(sessionId, version);
+      if (version !== selectionVersion) return;
       const ticket = await fetch(`/api/sessions/${sessionId}/desktop-ticket`, { method: "POST" });
+      if (version !== selectionVersion) return;
       if (ticket.ok) {
         const desktop = await ticket.json();
-        $("vncLink").href = desktop.url;
+        $("vncLink").href = desktop.launch_url;
         $("vncFrame").src = desktop.url;
       }
       eventsEl.textContent = "";
@@ -215,8 +228,11 @@
       eventSource.onmessage = (evt) => {
         eventsEl.textContent += evt.data + "\n";
         eventsEl.scrollTop = eventsEl.scrollHeight;
+        const event = JSON.parse(evt.data);
+        if (event.event_type === "run.finished") {
+          void refreshSelectedSnapshot(sessionId, version);
+        }
       };
-      await refreshSessions();
     }
 
     $("newSession").onclick = async () => {
@@ -227,8 +243,24 @@
         body: JSON.stringify({ title }),
       });
       const session = await res.json();
+      $("title").value = "";
       await refreshSessions();
       await selectSession(session.id);
+    };
+
+    $("saveMessage").onclick = async () => {
+      if (!currentSessionId) return;
+      const content = $("message").value.trim();
+      if (!content) return;
+      const response = await fetch(`/api/sessions/${currentSessionId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "user", content }),
+      });
+      if (!response.ok) return alert((await response.json()).detail || "Message was not saved");
+      draftsBySession.delete(currentSessionId);
+      $("message").value = "";
+      await selectSession(currentSessionId);
     };
 
     $("refresh").onclick = async () => {
@@ -249,6 +281,7 @@
       });
       if (!response.ok) alert((await response.json()).detail || "Run failed");
       $("message").value = "";
+      draftsBySession.delete(currentSessionId);
       await selectSession(currentSessionId);
     };
 

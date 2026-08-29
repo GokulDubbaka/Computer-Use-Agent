@@ -20,7 +20,12 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from pydantic import BaseModel, Field
 from websockets.exceptions import WebSocketException
 from websockets.typing import Subprotocol
@@ -187,6 +192,11 @@ def _desktop_url(session_id: str) -> str:
         f"/desktop/{session_id}/vnc.html?autoconnect=1&resize=scale&reconnect=1"
         f"&path=desktop/{session_id}/websockify"
     )
+
+
+def _desktop_launch_url(session_id: str) -> str:
+    """Open a fresh, session-bound desktop ticket before redirecting to noVNC."""
+    return f"/desktop/{session_id}/launch"
 
 
 @app.get("/health")
@@ -389,7 +399,26 @@ async def desktop_ticket(session_id: str, response: Response) -> dict[str, str]:
         secure=False,
         path=f"/desktop/{session_id}",
     )
-    return {"url": _desktop_url(session_id)}
+    return {"url": _desktop_url(session_id), "launch_url": _desktop_launch_url(session_id)}
+
+
+@app.get("/desktop/{session_id}/launch")
+async def launch_desktop(session_id: str) -> Response:
+    """Issue a new short-lived ticket for a top-level noVNC window."""
+    session = await asyncio.to_thread(store.get_session, session_id)
+    if session is None or session["status"] not in ("ready", "running"):
+        raise HTTPException(status_code=409, detail="desktop is not ready")
+    response = RedirectResponse(_desktop_url(session_id), status_code=302)
+    response.set_cookie(
+        "desktop_ticket",
+        create_ticket(session_id, settings.ticket_secret),
+        max_age=120,
+        httponly=True,
+        samesite="strict",
+        secure=False,
+        path=f"/desktop/{session_id}",
+    )
+    return response
 
 
 def _desktop_session(session_id: str, ticket: str | None) -> dict[str, Any]:
