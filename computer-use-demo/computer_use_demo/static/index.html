@@ -171,6 +171,11 @@
     const metaEl = $("sessionMeta");
     $("vncLink").href = "#";
 
+    function clearDesktop() {
+      $("vncLink").href = "#";
+      $("vncFrame").src = "about:blank";
+    }
+
     function setStreamState(text, cls = "") {
       streamStateEl.textContent = text;
       streamStateEl.className = `pill ${cls}`.trim();
@@ -210,6 +215,7 @@
       currentSessionId = sessionId;
       const version = ++selectionVersion;
       if (eventSource) eventSource.close();
+      clearDesktop();
       $("message").value = draftsBySession.get(sessionId) || "";
       await refreshSelectedSnapshot(sessionId, version);
       if (version !== selectionVersion) return;
@@ -219,6 +225,8 @@
         const desktop = await ticket.json();
         $("vncLink").href = desktop.launch_url;
         $("vncFrame").src = desktop.url;
+      } else {
+        clearDesktop();
       }
       eventsEl.textContent = "";
       setStreamState("Connecting...", "warn");
@@ -291,7 +299,7 @@
       if (!response.ok) return alert((await response.json()).detail || "Cannot end session");
       currentSessionId = null;
       if (eventSource) eventSource.close();
-      $("vncFrame").src = "about:blank";
+      clearDesktop();
       detailEl.textContent = "Select a session.";
       await refreshSessions();
     };
