@@ -1,0 +1,21 @@
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+COPY computer_use_demo/requirements.txt /tmp/requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r /tmp/requirements.txt
+
+COPY computer_use_demo/ /app/computer_use_demo/
+
+RUN useradd --create-home --uid 10001 appuser
+USER appuser
+
+EXPOSE 8000 9000
+
+CMD ["uvicorn", "computer_use_demo.server:app", "--host", "0.0.0.0", "--port", "8000"]
+

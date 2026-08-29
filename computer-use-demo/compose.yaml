@@ -1,19 +1,82 @@
+name: computer-use
+
 services:
-  computer-use:
-    build: .
+  postgres:
+    image: postgres:17-bookworm
     environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent-local-only}
+      POSTGRES_DB: agent
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [platform]
+    restart: unless-stopped
+
+  capsule-image:
+    image: computer-use-capsule:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/bin/true"]
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.control
+    command: ["uvicorn", "computer_use_demo.server:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATABASE_URL: postgresql://agent:${POSTGRES_PASSWORD:-agent-local-only}@postgres:5432/agent
+      CONTROLLER_URL: http://controller:9000
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-local-development-only}
+      TICKET_SECRET: ${TICKET_SECRET:-local-development-ticket-secret}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-3600}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      controller:
+        condition: service_started
+    labels:
+      computer-use.role: control-plane
+    ports:
+      - "127.0.0.1:8080:8000"
+    networks: [platform]
+    restart: unless-stopped
+
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.control
+    command: ["uvicorn", "computer_use_demo.controller:app", "--host", "0.0.0.0", "--port", "9000"]
+    user: root
+    environment:
+      DOCKER_API_VERSION: "1.44"
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-local-development-only}
+      CAPSULE_IMAGE: computer-use-capsule:local
+      CAPSULE_NETWORK: computer-use-network
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
       API_PROVIDER: ${API_PROVIDER:-anthropic}
-      SESSION_DB_PATH: /home/computeruse/.anthropic/sessions.sqlite3
-    ports:
-      - "127.0.0.1:8080:8080"
-      - "127.0.0.1:6080:6080"
-      - "127.0.0.1:5900:5900"
+      AGENT_MODE: ${AGENT_MODE:-mock}
+      CAPSULE_CPU_LIMIT: ${CAPSULE_CPU_LIMIT:-1.5}
+      CAPSULE_MEMORY_LIMIT: ${CAPSULE_MEMORY_LIMIT:-2g}
+      CAPSULE_PIDS_LIMIT: ${CAPSULE_PIDS_LIMIT:-512}
     volumes:
-      - session-data:/home/computeruse/.anthropic
-    shm_size: "2gb"
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      capsule-image:
+        condition: service_completed_successfully
+    networks: [platform]
     restart: unless-stopped
 
+networks:
+  platform:
+    name: computer-use-network
+
 volumes:
-  session-data:
+  postgres-data:

@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import psycopg
 from psycopg.errors import UniqueViolation
@@ -53,7 +53,10 @@ class PostgresStore:
         self._initialized = False
 
     def _connect(self) -> psycopg.Connection[dict[str, Any]]:
-        return psycopg.connect(self.config.database_url, row_factory=dict_row)
+        connection = psycopg.connect(
+            self.config.database_url, row_factory=dict_row  # pyright: ignore[reportArgumentType]
+        )
+        return cast(psycopg.Connection[dict[str, Any]], connection)
 
     def initialize(self) -> None:
         if self._initialized:
@@ -63,7 +66,7 @@ class PostgresStore:
                 return
             schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
             with self._connect() as conn:
-                conn.execute(schema)
+                conn.execute(schema)  # pyright: ignore[reportCallIssue, reportArgumentType]
             self._initialized = True
 
     def ping(self) -> None:
@@ -167,6 +170,42 @@ class PostgresStore:
             ).fetchone()
         return _row(row)
 
+    def get_session_snapshot(self, session_id: str, event_limit: int = 200) -> dict[str, Any] | None:
+        """Read a self-consistent session view while runs may finish concurrently."""
+        self.initialize()
+        with self._connect() as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            session = conn.execute(
+                "SELECT * FROM sessions WHERE id = %s AND status <> 'terminated'",
+                (session_id,),
+            ).fetchone()
+            if session is None:
+                return None
+            active_run = conn.execute(
+                """
+                SELECT * FROM runs WHERE session_id = %s AND status IN ('queued', 'running')
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+            messages = conn.execute(
+                "SELECT * FROM messages WHERE session_id = %s ORDER BY sequence",
+                (session_id,),
+            ).fetchall()
+            events = conn.execute(
+                """
+                SELECT * FROM events WHERE session_id = %s
+                ORDER BY sequence LIMIT %s
+                """,
+                (session_id, event_limit),
+            ).fetchall()
+        return {
+            "session": _row(session) or {},
+            "active_run": _row(active_run),
+            "messages": [_row(row) or {} for row in messages],
+            "events": [_row(row) or {} for row in events],
+        }
+
     def list_sessions(self, *, limit: int = 50) -> list[dict[str, Any]]:
         self.initialize()
         with self._connect() as conn:
@@ -189,10 +228,12 @@ class PostgresStore:
             ).fetchone()
             if session is None:
                 raise KeyError(session_id)
-            seq = conn.execute(
+            sequence_row = conn.execute(
                 "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM messages WHERE session_id = %s",
                 (session_id,),
-            ).fetchone()["sequence"]
+            ).fetchone()
+            assert sequence_row is not None
+            seq = sequence_row["sequence"]
             message = conn.execute(
                 """
                 INSERT INTO messages (id, session_id, run_id, sequence, role, content)
@@ -223,7 +264,7 @@ class PostgresStore:
         prompt: str,
         model: str | None,
     ) -> tuple[dict[str, Any], bool]:
-        """Atomically persist the prompt, run, command and events."""
+        """Atomically persist the prompt and its run queue record."""
         self.initialize()
         try:
             with self._connect() as conn:
@@ -238,7 +279,7 @@ class PostgresStore:
                 ).fetchone()
                 if existing is not None:
                     return _row(existing) or {}, False
-                if session["status"] not in ("ready", "running"):
+                if session["status"] not in ("ready", "running", "error"):
                     raise ConflictError(f"session is {session['status']}")
 
                 run_id = _id("run")
@@ -249,23 +290,18 @@ class PostgresStore:
                     """,
                     (run_id, session_id, idempotency_key, prompt, model),
                 ).fetchone()
-                message_seq = conn.execute(
+                message_sequence_row = conn.execute(
                     "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM messages WHERE session_id = %s",
                     (session_id,),
-                ).fetchone()["sequence"]
+                ).fetchone()
+                assert message_sequence_row is not None
+                message_seq = message_sequence_row["sequence"]
                 conn.execute(
                     """
                     INSERT INTO messages (id, session_id, run_id, sequence, role, content)
                     VALUES (%s, %s, %s, %s, 'user', %s::jsonb)
                     """,
                     (_id("msg"), session_id, run_id, message_seq, _json(prompt)),
-                )
-                conn.execute(
-                    """
-                    INSERT INTO commands (id, session_id, run_id, command_type, payload)
-                    VALUES (%s, %s, %s, 'execute_run', %s::jsonb)
-                    """,
-                    (_id("cmd"), session_id, run_id, _json({"run_id": run_id})),
                 )
                 conn.execute(
                     """
@@ -297,6 +333,127 @@ class PostgresStore:
             ).fetchone()
         return _row(row)
 
+    def claim_next_run(self, session_id: str, worker_id: str) -> dict[str, Any] | None:
+        """Claim only work owned by this capsule's session."""
+        self.initialize()
+        lease_until = datetime.now(UTC) + timedelta(seconds=self.config.lease_seconds)
+        with self._connect() as conn:
+            run = conn.execute(
+                """
+                SELECT * FROM runs
+                WHERE session_id = %s AND status = 'queued'
+                ORDER BY created_at
+                FOR UPDATE SKIP LOCKED LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+            if run is None:
+                return None
+            claimed = conn.execute(
+                """
+                UPDATE runs SET status = 'running', worker_id = %s,
+                    lease_version = lease_version + 1, lease_expires_at = %s,
+                    started_at = COALESCE(started_at, now()), updated_at = now()
+                WHERE id = %s AND status = 'queued' RETURNING *
+                """,
+                (worker_id, lease_until, run["id"]),
+            ).fetchone()
+        return _row(claimed)
+
+    def fail_session(self, session_id: str) -> None:
+        self.initialize()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE sessions SET status = 'error', runtime_id = NULL,
+                    runtime_host = NULL, runtime_token_hash = NULL, updated_at = now()
+                WHERE id = %s AND status = 'provisioning'
+                """,
+                (session_id,),
+            )
+
+    def heartbeat_run(
+        self, session_id: str, run_id: str, worker_id: str, lease_version: int
+    ) -> bool:
+        self.initialize()
+        lease_until = datetime.now(UTC) + timedelta(seconds=self.config.lease_seconds)
+        with self._connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE runs SET lease_expires_at = %s, updated_at = now()
+                WHERE id = %s AND session_id = %s AND worker_id = %s
+                    AND lease_version = %s AND status = 'running'
+                """,
+                (lease_until, run_id, session_id, worker_id, lease_version),
+            ).rowcount
+        return updated == 1
+
+    def interrupt_expired_runs(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Fence workers whose durable lease expired; never replay browser effects blindly."""
+        self.initialize()
+        interrupted: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM runs
+                WHERE status = 'running' AND lease_expires_at < now()
+                ORDER BY lease_expires_at
+                FOR UPDATE SKIP LOCKED LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+            for run in rows:
+                updated = conn.execute(
+                    """
+                    UPDATE runs SET status = 'interrupted',
+                        error_text = 'worker lease expired; external state requires verification',
+                        completed_at = now(), lease_expires_at = NULL, updated_at = now()
+                    WHERE id = %s AND status = 'running' RETURNING *
+                    """,
+                    (run["id"],),
+                ).fetchone()
+                if updated is None:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE sessions SET status = 'error', active_run_id = NULL, updated_at = now()
+                    WHERE id = %s AND active_run_id = %s
+                    """,
+                    (run["session_id"], run["id"]),
+                )
+                interrupted.append(_row(updated) or {})
+        return interrupted
+
+    def terminate_session(self, session_id: str) -> None:
+        self.initialize()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE sessions SET status = 'terminated', runtime_id = NULL,
+                    runtime_host = NULL, runtime_token_hash = NULL, updated_at = now()
+                WHERE id = %s
+                """,
+                (session_id,),
+            )
+
+    def list_expired_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE (
+                    expires_at < now()
+                    AND status IN ('provisioning', 'ready', 'error', 'terminating')
+                ) OR (
+                    status = 'provisioning' AND updated_at < now() - interval '5 minutes'
+                )
+                ORDER BY expires_at LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [_row(row) or {} for row in rows]
+
     def list_events(
         self, session_id: str, *, after_sequence: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
@@ -318,11 +475,18 @@ class PostgresStore:
         status: str,
         result: dict[str, Any] | None = None,
         error_text: str | None = None,
+        worker_id: str,
+        lease_version: int,
     ) -> dict[str, Any] | None:
         self.initialize()
         with self._connect() as conn:
             run = conn.execute("SELECT * FROM runs WHERE id = %s FOR UPDATE", (run_id,)).fetchone()
-            if run is None:
+            if (
+                run is None
+                or run["status"] != "running"
+                or run["worker_id"] != worker_id
+                or run["lease_version"] != lease_version
+            ):
                 return None
             updated = conn.execute(
                 """
@@ -356,12 +520,5 @@ class PostgresStore:
             conn.execute(
                 "UPDATE sessions SET status = 'terminating', updated_at = now() WHERE id = %s",
                 (session_id,),
-            )
-            conn.execute(
-                """
-                INSERT INTO commands (id, session_id, command_type, payload)
-                VALUES (%s, %s, 'destroy_runtime', '{}'::jsonb)
-                """,
-                (_id("cmd"), session_id),
             )
         return True

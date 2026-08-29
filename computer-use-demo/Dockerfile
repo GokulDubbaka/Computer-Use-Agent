@@ -23,7 +23,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-venv \
     scrot \
-    sudo \
     supervisor \
     tigervnc-standalone-server \
     websockify \
@@ -33,8 +32,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --shell /bin/bash computeruse \
-    && echo "computeruse ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/computeruse \
-    && chmod 0440 /etc/sudoers.d/computeruse \
     && mkdir -p /tmp/.X11-unix \
     && chmod 1777 /tmp/.X11-unix \
     && python3 -m venv /opt/venv \
@@ -42,7 +39,7 @@ RUN useradd --create-home --shell /bin/bash computeruse \
 
 ENV HOME=/home/computeruse \
     PATH=/opt/venv/bin:$PATH \
-    SESSION_DB_PATH=/home/computeruse/.anthropic/sessions.sqlite3
+    PYTHONPATH=/home/computeruse
 
 WORKDIR /home/computeruse
 USER computeruse
@@ -57,9 +54,9 @@ COPY --chown=computeruse:computeruse computer_use_demo/ ./computer_use_demo/
 RUN mkdir -p "$HOME/.anthropic" \
     && chmod +x ./entrypoint.sh ./start_tigervnc.sh ./start_openbox.sh ./start_novnc.sh
 
-EXPOSE 8080 6080 5900
+EXPOSE 6080 5900
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl --fail http://127.0.0.1:8080/ready || exit 1
+    CMD nc -z 127.0.0.1 6080 || exit 1
 
 ENTRYPOINT ["./entrypoint.sh"]

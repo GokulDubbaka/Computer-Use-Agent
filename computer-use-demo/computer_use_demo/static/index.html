@@ -137,8 +137,8 @@
         <textarea id="message" placeholder="Write a message to persist"></textarea>
       </div>
       <div class="row">
-        <button class="primary" id="sendMessage">Send Message</button>
-        <button id="createRun">Run Agent</button>
+        <button class="primary" id="createRun">Run Agent</button>
+        <button id="deleteSession">End Session</button>
       </div>
       <div>
         <div class="label">Session Detail</div>
@@ -169,9 +169,7 @@
     const eventsEl = $("events");
     const streamStateEl = $("streamState");
     const metaEl = $("sessionMeta");
-    const vncUrl = `${location.protocol}//${location.hostname}:6080/vnc.html?resize=scale&autoconnect=1&view_only=1&reconnect=1&reconnect_delay=2000`;
-    $("vncLink").href = vncUrl;
-    $("vncFrame").src = vncUrl;
+    $("vncLink").href = "#";
 
     function setStreamState(text, cls = "") {
       streamStateEl.textContent = text;
@@ -203,6 +201,12 @@
       const data = await res.json();
       metaEl.textContent = `${data.id} · ${data.status}`;
       detailEl.textContent = JSON.stringify(data, null, 2);
+      const ticket = await fetch(`/api/sessions/${sessionId}/desktop-ticket`, { method: "POST" });
+      if (ticket.ok) {
+        const desktop = await ticket.json();
+        $("vncLink").href = desktop.url;
+        $("vncFrame").src = desktop.url;
+      }
       eventsEl.textContent = "";
       setStreamState("Connecting...", "warn");
       eventSource = new EventSource(`/api/sessions/${sessionId}/stream`);
@@ -234,25 +238,29 @@
       }
     };
 
-    $("sendMessage").onclick = async () => {
+    $("createRun").onclick = async () => {
       if (!currentSessionId) return;
-      await fetch(`/api/sessions/${currentSessionId}/messages`, {
+      const prompt = $("message").value.trim();
+      if (!prompt) return;
+      const response = await fetch(`/api/sessions/${currentSessionId}/runs`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: "user", content: $("message").value }),
+        headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({ prompt }),
       });
+      if (!response.ok) alert((await response.json()).detail || "Run failed");
       $("message").value = "";
       await selectSession(currentSessionId);
     };
 
-    $("createRun").onclick = async () => {
+    $("deleteSession").onclick = async () => {
       if (!currentSessionId) return;
-      await fetch(`/api/sessions/${currentSessionId}/runs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
-        body: JSON.stringify({}),
-      });
-      await selectSession(currentSessionId);
+      const response = await fetch(`/api/sessions/${currentSessionId}`, { method: "DELETE" });
+      if (!response.ok) return alert((await response.json()).detail || "Cannot end session");
+      currentSessionId = null;
+      if (eventSource) eventSource.close();
+      $("vncFrame").src = "about:blank";
+      detailEl.textContent = "Select a session.";
+      await refreshSessions();
     };
 
     refreshSessions();

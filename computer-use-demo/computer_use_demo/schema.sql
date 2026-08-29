@@ -67,26 +67,13 @@ CREATE TABLE IF NOT EXISTS events (
     PRIMARY KEY (session_id, sequence)
 );
 
-CREATE TABLE IF NOT EXISTS commands (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    run_id TEXT REFERENCES runs(id) ON DELETE CASCADE,
-    command_type TEXT NOT NULL,
-    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'claimed', 'done', 'failed')),
-    owner_id TEXT,
-    lease_expires_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at TIMESTAMPTZ
-);
-
-CREATE INDEX IF NOT EXISTS commands_claim_queue
-ON commands(status, created_at)
-WHERE status = 'pending';
-
-ALTER TABLE sessions
-    DROP CONSTRAINT IF EXISTS sessions_active_run_fk;
-ALTER TABLE sessions
-    ADD CONSTRAINT sessions_active_run_fk
-    FOREIGN KEY (active_run_id) REFERENCES runs(id) ON DELETE SET NULL;
-
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'sessions_active_run_fk'
+    ) THEN
+        ALTER TABLE sessions
+            ADD CONSTRAINT sessions_active_run_fk
+            FOREIGN KEY (active_run_id) REFERENCES runs(id) ON DELETE SET NULL;
+    END IF;
+END $$;
