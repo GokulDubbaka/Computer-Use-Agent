@@ -57,7 +57,9 @@ async def create_runtime(
     name = _runtime_name(payload.session_id)
     try:
         existing = await asyncio.to_thread(client.containers.get, name)
-        return {"runtime_id": existing.id, "runtime_host": name, "created": False}
+        if existing.status == "running":
+            return {"runtime_id": existing.id, "runtime_host": name, "created": False}
+        await asyncio.to_thread(existing.remove, force=True, v=True)
     except NotFound:
         pass
 
