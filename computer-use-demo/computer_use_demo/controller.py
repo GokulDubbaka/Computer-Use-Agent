@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 import docker
-from docker.errors import NotFound
+from docker.errors import APIError, NotFound
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,17 @@ def _runtime_name(session_id: str) -> str:
     return f"capsule-{session_id}"
 
 
+async def _wait_for_runtime(name: str, attempts: int = 20) -> Any:
+    for attempt in range(attempts):
+        try:
+            return await asyncio.to_thread(client.containers.get, name)
+        except NotFound:
+            if attempt == attempts - 1:
+                raise
+            await asyncio.sleep(0.1)
+    raise RuntimeError("unreachable")
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     await asyncio.to_thread(client.ping)
@@ -54,29 +65,35 @@ async def create_runtime(
         "computer-use.managed": "true",
         "computer-use.session-id": payload.session_id,
     }
-    container = await asyncio.to_thread(
-        client.containers.run,
-        settings.capsule_image,
-        name=name,
-        detach=True,
-        network=settings.capsule_network,
-        labels=labels,
-        environment={
-            "SESSION_ID": payload.session_id,
-            "RUNTIME_TOKEN": payload.runtime_token,
-            "CONTROL_PLANE_URL": "http://api:8000",
-            "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
-            "ANTHROPIC_MODEL": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-            "API_PROVIDER": os.getenv("API_PROVIDER", "anthropic"),
-            "AGENT_MODE": os.getenv("AGENT_MODE", "mock"),
-        },
-        mem_limit=os.getenv("CAPSULE_MEMORY_LIMIT", "2g"),
-        nano_cpus=int(float(os.getenv("CAPSULE_CPU_LIMIT", "1.5")) * 1_000_000_000),
-        pids_limit=int(os.getenv("CAPSULE_PIDS_LIMIT", "512")),
-        cap_drop=["ALL"],
-        security_opt=["no-new-privileges:true"],
-        shm_size="512m",
-    )
+    try:
+        container = await asyncio.to_thread(
+            client.containers.run,
+            settings.capsule_image,
+            name=name,
+            detach=True,
+            network=settings.capsule_network,
+            labels=labels,
+            environment={
+                "SESSION_ID": payload.session_id,
+                "RUNTIME_TOKEN": payload.runtime_token,
+                "CONTROL_PLANE_URL": "http://api:8000",
+                "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
+                "ANTHROPIC_MODEL": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+                "API_PROVIDER": os.getenv("API_PROVIDER", "anthropic"),
+                "AGENT_MODE": os.getenv("AGENT_MODE", "mock"),
+            },
+            mem_limit=os.getenv("CAPSULE_MEMORY_LIMIT", "2g"),
+            nano_cpus=int(float(os.getenv("CAPSULE_CPU_LIMIT", "1.5")) * 1_000_000_000),
+            pids_limit=int(os.getenv("CAPSULE_PIDS_LIMIT", "512")),
+            cap_drop=["ALL"],
+            security_opt=["no-new-privileges:true"],
+            shm_size="512m",
+        )
+    except APIError as exc:
+        if exc.status_code != 409:
+            raise
+        container = await _wait_for_runtime(name)
+        return {"runtime_id": container.id, "runtime_host": name, "created": False}
     return {"runtime_id": container.id, "runtime_host": name, "created": True}
 
 
