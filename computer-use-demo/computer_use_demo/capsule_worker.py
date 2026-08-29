@@ -65,6 +65,7 @@ async def _execute(client: httpx.AsyncClient, run: dict[str, Any]) -> None:
     run_id = run["id"]
     lease_version = int(run["lease_version"])
     assistant_text: list[str] = []
+    api_failures: list[Exception] = []
     event_queue: asyncio.Queue[tuple[str, dict[str, Any]] | None] = asyncio.Queue()
     event_failures: list[Exception] = []
 
@@ -102,6 +103,8 @@ async def _execute(client: httpx.AsyncClient, run: dict[str, Any]) -> None:
         )
 
     def api_response_callback(request: Any, response: Any, error: Exception | None) -> None:
+        if error is not None:
+            api_failures.append(error)
         emit(
             "agent.api_response",
             {
@@ -154,10 +157,17 @@ async def _execute(client: httpx.AsyncClient, run: dict[str, Any]) -> None:
             return
         provider = APIProvider(os.getenv("API_PROVIDER", "anthropic"))
         api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID") or None
         if provider == APIProvider.ANTHROPIC and not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is required for live execution")
+        model = run.get("model") or os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+        tool_version = (
+            "computer_use_20250124"
+            if "haiku-4-5" in model
+            else "computer_use_20251124"
+        )
         await sampling_loop(
-            model=run.get("model") or os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+            model=model,
             provider=provider,
             system_prompt_suffix=f" This desktop belongs only to session {SESSION_ID}.",
             messages=[{"role": "user", "content": run["prompt"]}],
@@ -165,15 +175,17 @@ async def _execute(client: httpx.AsyncClient, run: dict[str, Any]) -> None:
             tool_output_callback=tool_output_callback,
             api_response_callback=api_response_callback,
             api_key=api_key,
+            workspace_id=workspace_id,
             only_n_most_recent_images=3,
             max_tokens=16_384,
-            tool_version="computer_use_20251124",
-            thinking_mode="adaptive",
-            thinking_effort="medium",
+            tool_version=tool_version,
+            thinking_mode="off",
         )
         await event_queue.join()
         if event_failures:
             raise event_failures[0]
+        if api_failures:
+            raise api_failures[0]
         response = await client.post(
             f"/internal/runtime/{SESSION_ID}/runs/{run_id}/finish",
             headers=HEADERS,
