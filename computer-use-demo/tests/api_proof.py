@@ -81,8 +81,9 @@ def main() -> None:
         )
         resumed = resume_sse(f"/api/sessions/{session_id}/stream", 2)
         checks["sse_last_event_id"] = resumed["sequence"] > 2
-        checks["history_persisted"] = any(
-            message["role"] == "assistant" for message in detail["messages"]
+        checks["user_history_persisted"] = any(
+            message["role"] == "user" and message["content"] == "idempotency marker"
+            for message in detail["messages"]
         )
         result = {"checks": checks, "passed": all(checks.values()), "session_id": session_id}
         print(json.dumps(result, indent=2))
