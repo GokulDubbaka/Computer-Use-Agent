@@ -43,6 +43,20 @@ async def _wait_for_runtime(name: str, attempts: int = 20) -> Any:
     raise RuntimeError("unreachable")
 
 
+async def _wait_for_desktop(name: str, attempts: int = 50) -> None:
+    for attempt in range(attempts):
+        try:
+            _, writer = await asyncio.open_connection(name, 6080)
+        except OSError:
+            if attempt == attempts - 1:
+                raise
+            await asyncio.sleep(0.1)
+            continue
+        writer.close()
+        await writer.wait_closed()
+        return
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     await asyncio.to_thread(client.ping)
@@ -58,6 +72,7 @@ async def create_runtime(
     try:
         existing = await asyncio.to_thread(client.containers.get, name)
         if existing.status == "running":
+            await _wait_for_desktop(name)
             return {"runtime_id": existing.id, "runtime_host": name, "created": False}
         await asyncio.to_thread(existing.remove, force=True, v=True)
     except NotFound:
@@ -86,7 +101,7 @@ async def create_runtime(
             },
             mem_limit=os.getenv("CAPSULE_MEMORY_LIMIT", "2g"),
             nano_cpus=int(float(os.getenv("CAPSULE_CPU_LIMIT", "1.5")) * 1_000_000_000),
-            pids_limit=int(os.getenv("CAPSULE_PIDS_LIMIT", "512")),
+            pids_limit=int(os.getenv("CAPSULE_PIDS_LIMIT", "1024")),
             cap_drop=["ALL"],
             security_opt=["no-new-privileges:true"],
             shm_size="512m",
@@ -95,7 +110,9 @@ async def create_runtime(
         if exc.status_code != 409:
             raise
         container = await _wait_for_runtime(name)
+        await _wait_for_desktop(name)
         return {"runtime_id": container.id, "runtime_host": name, "created": False}
+    await _wait_for_desktop(name)
     return {"runtime_id": container.id, "runtime_host": name, "created": True}
 
 
