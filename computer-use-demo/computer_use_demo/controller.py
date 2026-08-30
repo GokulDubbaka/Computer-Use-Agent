@@ -96,7 +96,9 @@ async def create_runtime(
                 "CONTROL_PLANE_URL": "http://api:8000",
                 "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
                 "ANTHROPIC_WORKSPACE_ID": os.getenv("ANTHROPIC_WORKSPACE_ID", ""),
-                "ANTHROPIC_MODEL": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+                "ANTHROPIC_MODEL": os.getenv(
+                    "ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"
+                ),
                 "API_PROVIDER": os.getenv("API_PROVIDER", "anthropic"),
             },
             mem_limit=os.getenv("CAPSULE_MEMORY_LIMIT", "2g"),
