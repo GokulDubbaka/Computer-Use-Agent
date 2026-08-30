@@ -118,7 +118,9 @@ async def _execute(client: httpx.AsyncClient, run: dict[str, Any]) -> None:
         workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID") or None
         if provider == APIProvider.ANTHROPIC and not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is required for live execution")
-        model = run.get("model") or os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+        model = run.get("model") or os.getenv(
+            "ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"
+        )
         tool_version = (
             "computer_use_20250124"
             if "haiku-4-5" in model
