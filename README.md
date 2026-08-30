@@ -4,6 +4,10 @@ Gokul Dubbaka
 
 A FastAPI application that runs independent Anthropic computer-use sessions concurrently. Each session owns its messages, event sequence, run state, Firefox desktop, VNC stream, and disposable runtime. A slow or failed session does not block another session from starting.
 
+## Demo video
+
+[Watch the five-minute demonstration](https://github.com/GokulDubbaka/CambioML-coding-challenge/releases/download/demo-v1/CambioML-demo-final.mp4)
+
 ## What this demonstrates
 
 - Dynamic one-capsule-per-session provisioning; no fixed worker or display count.
