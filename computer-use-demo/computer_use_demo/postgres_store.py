@@ -194,8 +194,11 @@ class PostgresStore:
             ).fetchall()
             events = conn.execute(
                 """
-                SELECT * FROM events WHERE session_id = %s
-                ORDER BY sequence LIMIT %s
+                SELECT * FROM (
+                    SELECT * FROM events WHERE session_id = %s
+                    ORDER BY sequence DESC LIMIT %s
+                ) AS recent_events
+                ORDER BY sequence
                 """,
                 (session_id, event_limit),
             ).fetchall()
